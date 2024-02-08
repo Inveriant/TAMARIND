@@ -102,9 +102,9 @@ def significant_bits(n: int) -> int:
 
 
 
-def plot_datasets(datasets):
+def plot_datasets(datasets, filename="test.pdf", is_regev=False):
     # Choose bit sizes to plot.
-    max_steps = 32
+    max_steps = 5
     bits = [1024 * s for s in range(1, max_steps + 1)]
     bits = [e for e in bits if significant_bits(e) <= 3]
     max_y = 1024 * max_steps
@@ -125,19 +125,15 @@ def plot_datasets(datasets):
                 hours.append(expected_hours)
                 megaqubits.append(cost.total_megaqubits)
                 valid_ns.append(n)
-        if color != "C5":
-          plt.plot(valid_ns, hours, color=color,
-                  label=name + f', C={radiusFactor}, hours', marker=marker)
-          plt.plot(valid_ns, megaqubits, color=color, label=name +
-                  f' C={radiusFactor}, megaqubits ', linestyle='--', marker=marker)
+        if is_regev==True:
+          plt.plot(valid_ns, hours, color=color, label=name + f', C={radiusFactor}, hours', marker=marker)
+          plt.plot(valid_ns, megaqubits, color=color, label=name + f' C={radiusFactor}, megaqubits ', linestyle='--', marker=marker)
         else:
-          plt.plot(valid_ns, hours, color=color,
-                  label=name + f', hours', marker=marker)
-          plt.plot(valid_ns, megaqubits, color=color, label=name +
-                  f' megaqubits ', linestyle='--', marker=marker)
+          plt.plot(valid_ns, hours, color=color, label=name + f', hours', marker=marker)
+          plt.plot(valid_ns, megaqubits, color=color, label=name + f' megaqubits ', linestyle='--', marker=marker)
         
         
-    #
+
 
     plt.xscale('log')
     plt.yscale('log')
@@ -159,7 +155,7 @@ def plot_datasets(datasets):
 
     # Export the figure to a PDF file.
     path = pathutils.dirname(pathutils.realpath(__file__))
-    path = pathutils.normpath(path + f"/regev-rsa-estimates-space-preference-{space_overhead}.pdf")
+    path = pathutils.normpath(path + f"/{filename}.pdf")
     plt.savefig(path)
 
 

@@ -1,5 +1,6 @@
 import datetime
 import itertools
+import sys
 
 from typing import Tuple, NamedTuple, Iterable, Iterator, Optional
 
@@ -449,6 +450,7 @@ def estimate_algorithm_cost_adi(params: Parameters) -> Optional[CostEstimate]:
         logical_qubits=logical_qubits)
 
 
+
 def estimate_algorithm_cost_qram(params: Parameters) -> Optional[CostEstimate]:
     """Determine algorithm single-shot layout and costs for given parameters."""
     
@@ -646,6 +648,8 @@ def estimate_best_problem_cost_slicedwindows(n: int, n_e: int, gate_error_rate: 
     return min(surviving_estimates, key=rank_estimate, default=None)
 
 
+
+
 # ------------------------------------------------------------------------------
 
 
@@ -756,12 +760,7 @@ def eh_rsa_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]:
     return estimate_best_problem_cost(n, math.ceil(n / 2), gate_error_rate)
 
 
-# def shor_dlp_schnorr(n, gate_error_rate) -> Optional[CostEstimate]:
-#     delta = 5 # Required to reach 99% success probability.
-#     z = fips_strength_level_rounded(n)
-#     m = 2 * z + delta
-#     n_e = 2 * m
-#     return estimate_best_problem_cost(n, n_e, gate_error_rate)
+
 
 # def eh_dlp_schnorr(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
 #     z = fips_strength_level_rounded(n)
@@ -778,12 +777,19 @@ def eh_rsa_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]:
 
 
 
-# # Short DLP
-# def eh_dlp_short(n, gate_error_rate) -> Optional[CostEstimate]:
-#     z = fips_strength_level_rounded(n)
-#     m = 2 * z
-#     n_e = 3 * m
-#     return estimate_best_problem_cost(n, n_e, gate_error_rate)
+# Short DLP
+def eh_dlp_short(n, gate_error_rate, _) -> Optional[CostEstimate]:
+    z = fips_strength_level_rounded(n)
+    m = 2 * z
+    n_e = 3 * m
+    return estimate_best_problem_cost(n, n_e, gate_error_rate)
+
+def shor_dlp_schnorr(n, gate_error_rate, _) -> Optional[CostEstimate]:
+    delta = 5 # Required to reach 99% success probability.
+    z = fips_strength_level_rounded(n)
+    m = 2 * z + delta
+    n_e = 2 * m
+    return estimate_best_problem_cost(n, n_e, gate_error_rate)
 
 
 # def eh_dlp_short_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]: # Multiple runs with maximal tradeoff.
@@ -793,17 +799,17 @@ def eh_rsa_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]:
 #     return estimate_best_problem_cost(n, n_e, gate_error_rate)
 
 
-# def shor_dlp_general(n, gate_error_rate) -> Optional[CostEstimate]:
-#     delta = 5 # Required to reach 99% success probability.
-#     m = n - 1 + delta
-#     n_e = 2 * m
-#     return estimate_best_problem_cost(n, n_e, gate_error_rate)
+def shor_dlp_general(n, gate_error_rate, _) -> Optional[CostEstimate]:
+    delta = 5 # Required to reach 99% success probability.
+    m = n - 1 + delta
+    n_e = 2 * m
+    return estimate_best_problem_cost(n, n_e, gate_error_rate)
 
 
-# def eh_dlp_general(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
-#     m = n - 1
-#     n_e = 3 * m
-#     return estimate_best_problem_cost(n, n_e, gate_error_rate)
+def eh_dlp_general(n, gate_error_rate, _) -> Optional[CostEstimate]: # Single run.
+    m = n - 1
+    n_e = 3 * m
+    return estimate_best_problem_cost(n, n_e, gate_error_rate)
 
 
 # def eh_dlp_general_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]: # Multiple runs with maximal tradeoff.
@@ -823,9 +829,7 @@ def tabulate():
         ("RSA, via Ekera-Håstad with s = 1 in a single run:", eh_rsa),
         ("RSA, via Ekera-Håstad ADI with s = 1 in a single run:", eh_rsa_adi),
         ("RSA, via Ekera-Håstad SlicedWindowing with s = 1 in a single run:", eh_rsa_slicedwindows),
-
-       # ("RSA, via Ekera-Håstad QRAM with s = 1 in a single run:", eh_rsa_qram),
-
+  
     #  ("RSA, via Regev with s = 1 in a single run:", regev_rsa)
         # ("Discrete logarithms, Schnorr group, via Shor:", shor_dlp_schnorr),
         # ("Discrete logarithms, Schnorr group, via Ekera-Håstad with s = 1 in a single run:", eh_dlp_schnorr),
@@ -857,19 +861,39 @@ def tabulate():
 
 
 if __name__ == '__main__':
-    tabulate()
+
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'table':
+            tabulate()
+        elif sys.argv[1] == 'plots':
+
+
+            # PLOT 1 - RSA (original, adi1, adi2)
+            selected_error = 1e-3
+            datasets = [
+                ('C0', 'RSA via Ekerå-Håstad - 0.1% gate error', eh_rsa, selected_error, 'o', None),
+                ('C1', 'RSA via Ekerå-Håstad (improved uncomputation) - 0.1% gate error', eh_rsa_adi, selected_error, 'd', None),
+                ('C2', 'RSA via Ekerå-Håstad (sliced windowing) - 0.1% gate error', eh_rsa_slicedwindows, selected_error, 'p', None),
+            ]
+
+
+            # # PLOT 2 - RSA (original, adi1, adi2)
+            # selected_error = 1e-4
+            # datasets = [
+            #     ('C0', 'RSA via Ekerå-Håstad - 0.01% gate error', eh_rsa, selected_error, 'o', None),
+            #     ('C1', 'RSA via Ekerå-Håstad (improved uncomputation) - 0.01% gate error', eh_rsa_adi, selected_error, 'd', None),
+            #     ('C2', 'RSA via Ekerå-Håstad (sliced windowing) - 0.01% gate error', eh_rsa_slicedwindows, selected_error, 'p', None),
+            # ]
 
 
 
-    # datasets = [
-    #     ('C0', 'RSA via Regev', regev_rsa, 1e-3, 'o', 0.2),
-    #     ('C1', 'RSA via Regev', regev_rsa, 1e-3, 's', 0.4),
-    #     ('C2', 'RSA via Regev', regev_rsa, 1e-3, 'd', 0.6),
-    #     ('C3', 'RSA via Regev', regev_rsa, 1e-3, 'P', 0.8),
-    #     ('C4', 'RSA via Regev', regev_rsa, 1e-3, 'X', 1.0),
-    #     ('C5', 'RSA via Ekerå-Håstad', eh_rsa, 1e-3, '+', 0),
-    # ]
 
-    # plot_datasets(datasets)
+                # ('C1', 'Short DLP or Schnorr DLP via EH', eh_dlp_short, 1e-3, 's', None),
+                # ('C3', 'Schnorr DLP via Shor', shor_dlp_schnorr, 1e-3, 'd', None),
+                # ('C2', 'General DLP via EH', eh_dlp_general, 1e-3, 'P', None),
+                # ('C4', 'General DLP via Shor', shor_dlp_general, 1e-3, 'X', None),
+            
 
-    #plt.show()
+            plot_datasets(datasets, sys.argv[2])
+
+            plt.show()
