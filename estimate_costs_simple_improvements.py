@@ -5,6 +5,8 @@ from typing import Tuple, NamedTuple, Iterable, Iterator, Optional
 
 import math
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os.path as pathutils
 
@@ -38,6 +40,10 @@ Parameters = NamedTuple(
         ('use_t_t_distillation', bool),
         # Number of bits of padding to use for runways and modular coset.
         ('deviation_padding', int),
+        # Whether or not to use optimized windowing.
+        ('opt_win', bool),
+        # params for direct exponentiation
+        ('larger_init_lookup', int),
     ]
 )
 
@@ -45,21 +51,24 @@ Parameters = NamedTuple(
 def parameters_to_attempt(n: int,
                           n_e: int,
                           gate_error_rate: float,
-                          ) -> Iterator[Parameters]:
+                          opt_win: bool) -> Iterator[Parameters]:
     l1_distances = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
     l2_distances = range(9, 51, 2)
     exp_windows = [4, 5, 6]
     mul_windows = [4, 5, 6]
     runway_seps = [512, 768, 1024, 1536, 2048]
+    # don't do large initial lookup if opt window is false
+    larger_init_lookup = range(17, 27) if opt_win else [0]
     dev_offs = range(2, 10)
 
-    for d1, d2, exp_window, mul_window, runway_sep, dev_off in itertools.product(
+    for d1, d2, exp_window, mul_window, runway_sep, dev_off, larger_init_lkp in itertools.product(
             l1_distances,
             l2_distances,
             exp_windows,
             mul_windows,
             runway_seps,
-            dev_offs):
+            dev_offs,
+            larger_init_lookup):
         if mul_window > exp_window or n % runway_sep != 0:
             continue
         distill_types = [False]
@@ -67,19 +76,21 @@ def parameters_to_attempt(n: int,
             distill_types.append(True)
         for b in distill_types:
             yield Parameters(
-                gate_err=gate_error_rate,
-                reaction_time=datetime.timedelta(microseconds=10),
-                cycle_time=datetime.timedelta(microseconds=1),
-                exp_window=exp_window,
-                mul_window=mul_window,
-                runway_sep=runway_sep,
-                l1_distance=d1,
-                code_distance=d2,
-                max_total_err=0.8,
-                n=n,
-                n_e=n_e,
-                use_t_t_distillation=b,
-                deviation_padding=int(math.ceil(math.log2(n*n*n_e)) + dev_off))
+              gate_err=gate_error_rate,
+              reaction_time=datetime.timedelta(microseconds=10),
+              cycle_time=datetime.timedelta(microseconds=1),
+              exp_window=exp_window,
+              mul_window=mul_window,
+              runway_sep=runway_sep,
+              l1_distance=d1,
+              code_distance=d2,
+              max_total_err=0.8,
+              n=n,
+              n_e=n_e,
+              use_t_t_distillation=b,
+              deviation_padding=int(math.ceil(math.log2(n * n * (n_e - (larger_init_lkp if opt_win else 0)))) + dev_off),
+              larger_init_lookup=larger_init_lkp,
+              opt_win=opt_win)
 
 
 def topological_error_per_unit_cell(
@@ -168,8 +179,9 @@ def compute_deviation_properties(params: Parameters) -> DeviationProperties:
     # Temporarily adding carry runways into main register avoids need to
     # iterate over their bits when multiplying with that register as input.
     mul_in_bits = params.n + params.deviation_padding + 2
-    inner_loop_count = int(math.ceil(params.n_e * 2 * mul_in_bits / (
-            params.exp_window * params.mul_window)))
+    # only subtract from exponent bits if using optimized windowing
+    inner_loop_count = int(math.ceil((params.n_e - (params.larger_init_lookup if params.opt_win else 0)) * 2 * mul_in_bits / (
+        params.exp_window * params.mul_window)))
 
     classical_deviation_error = inner_loop_count * piece_count / 2**params.deviation_padding
     quantum_deviation_error = 4*math.sqrt(classical_deviation_error)
@@ -282,76 +294,76 @@ def physical_qubits_per_logical_qubit(code_distance: int) -> int:
 
 
 def estimate_algorithm_cost(params: Parameters) -> Optional[CostEstimate]:
-    """Determine algorithm single-shot layout and costs for given parameters."""
+  """Determine algorithm single-shot layout and costs for given parameters."""
 
-    post_process_error = 1e-2  # assumed to be below 1%
-    dev = compute_deviation_properties(params)
+  post_process_error = 1e-2  # assumed to be below 1%
+  dev = compute_deviation_properties(params)
 
-    # Derive values for understanding inner loop.
-    adder_depth = dev.piece_len * 2 - 1
-    lookup_depth = 2 ** (params.exp_window + params.mul_window) - 1
+  # Derive values for understanding inner loop.
+  adder_depth = dev.piece_len * 2 - 1
+
+  lookup_depth = 2 ** (params.exp_window + params.mul_window) - 1
+  if params.opt_win:
+    # split unlookup into two parts, cost of unary conversion (done only one per exponent window) and cost of phase correction (i.e cost of unlookup)
+    unlookup_depth = math.sqrt(lookup_depth)
+    unary_depth = math.sqrt(lookup_depth)
+    
+    
+    lookup_depth -= 2 ** (params.exp_window)
+    # We call this additional toffoli count, but it's actually less if we have a larger initial lookup and use deferred unlookups
+    additional_tof_count = (2 * (params.n_e - params.larger_init_lookup) * unary_depth / params.exp_window) + \
+                 (2 ** (params.larger_init_lookup) - 1)
+    additional_time = (2 ** (params.larger_init_lookup) - 1) * params.code_distance * params.cycle_time / 2
+  else:
     unlookup_depth = 2 * math.sqrt(lookup_depth)
+    additional_tof_count = 0
+    additional_time = 0*params.cycle_time
 
-    # Derive values for understanding overall algorithm.
-    piece_width, piece_height, piece_distillation = board_logical_dimensions(
-        params, dev.piece_len)
-    logical_qubits = piece_width * piece_height * dev.piece_count
-    distillation_area = piece_distillation * dev.piece_count
+  tof_count = (adder_depth * dev.piece_count + lookup_depth + unlookup_depth) * dev.inner_loop_count + additional_tof_count
+  inner_loop_time = (
+    adder_depth * params.reaction_time +
+    lookup_depth * params.code_distance * params.cycle_time / 2 +
+    unlookup_depth * params.code_distance * params.cycle_time / 2)
+  total_time = inner_loop_time * dev.inner_loop_count + additional_time
 
-    tof_count = (adder_depth * dev.piece_count
-                 + lookup_depth
-                 + unlookup_depth) * dev.inner_loop_count
+  piece_width, piece_height, piece_distillation = board_logical_dimensions(params, dev.piece_len)
+  logical_qubits = piece_width * piece_height * dev.piece_count
+  distillation_area = piece_distillation * dev.piece_count
 
-    # Code distance lets us compute time taken.
-    inner_loop_time = (
-            adder_depth * params.reaction_time +
-            # Double speed lookup.
-            lookup_depth * params.code_distance * params.cycle_time / 2 +
-            unlookup_depth * params.code_distance * params.cycle_time / 2)
-    total_time = inner_loop_time * dev.inner_loop_count
+  surface_code_cycles = total_time / params.cycle_time
+  topological_error = total_topological_error(
+    unit_cells=(logical_qubits - distillation_area) * surface_code_cycles,
+    code_distance=params.code_distance,
+    gate_err=params.gate_err)
 
-    # Upper-bound the topological error:
-    surface_code_cycles = total_time / params.cycle_time
-    topological_error = total_topological_error(
-        unit_cells=(logical_qubits  - distillation_area) * surface_code_cycles,
-        code_distance=params.code_distance,
-        gate_err=params.gate_err)
+  distillation_error = compute_distillation_error(tof_count=tof_count, params=params)
 
-    # Account for the distillation error:
-    distillation_error = compute_distillation_error(
-        tof_count=tof_count,
-        params=params)
+  total_error = probability_union(
+    topological_error,
+    distillation_error,
+    dev.deviation_error,
+    post_process_error,
+  )
+  if total_error >= params.max_total_err:
+    return None
 
-    # Check the total error.
-    total_error = probability_union(
-        topological_error,
-        distillation_error,
-        dev.deviation_error,
-        post_process_error,
-    )
-    if total_error >= params.max_total_err:
-        return None
+  total_qubits = logical_qubits * physical_qubits_per_logical_qubit(params.code_distance)
+  total_time_seconds = total_time.total_seconds()
 
-    # Great!
-    total_qubits = logical_qubits * physical_qubits_per_logical_qubit(
-        params.code_distance)
-    total_time = total_time.total_seconds()
+  total_hours = total_time_seconds / 3600
+  total_megaqubits = total_qubits / 1e6
+  total_volume_megaqubitdays = (total_hours / 24) * total_megaqubits
+  total_error = math.ceil(100 * total_error) / 100
 
-    # Format.
-    total_hours = total_time / 60 ** 2
-    total_megaqubits = total_qubits / 10 ** 6
-    total_volume_megaqubitdays = (total_hours / 24) * total_megaqubits
-    total_error = math.ceil(100 * total_error) / 100
-
-    return CostEstimate(
-        params=params,
-        toffoli_count=tof_count,
-        distillation_error=distillation_error,
-        topological_data_error=topological_error,
-        total_error=total_error,
-        total_hours=total_hours,
-        total_megaqubits=total_megaqubits,
-        total_volume_megaqubitdays=total_volume_megaqubitdays)
+  return CostEstimate(
+    params=params,
+    toffoli_count=tof_count,
+    distillation_error=distillation_error,
+    topological_data_error=topological_error,
+    total_error=total_error,
+    total_hours=total_hours,
+    total_megaqubits=total_megaqubits,
+    total_volume_megaqubitdays=total_volume_megaqubitdays)
 
 
 def rank_estimate(costs: CostEstimate) -> float:
@@ -360,29 +372,19 @@ def rank_estimate(costs: CostEstimate) -> float:
     return skewed_volume / (1 - costs.total_error)
 
 
-def estimate_best_problem_cost(n: int, n_e: int, gate_error_rate: float) -> Optional[CostEstimate]:
+def estimate_best_problem_cost(n: int, n_e: int, gate_error_rate: float, opt_win: bool = True) -> Optional[CostEstimate]:
     estimates = [estimate_algorithm_cost(params)
-                 for params in parameters_to_attempt(n, n_e, gate_error_rate)]
+                 for params in parameters_to_attempt(n, n_e, gate_error_rate, opt_win)]
     surviving_estimates = [e for e in estimates if e is not None]
     return min(surviving_estimates, key=rank_estimate, default=None)
 
 
 # ------------------------------------------------------------------------------
-
 def reduce_significant(q: float) -> float:
-    """Return only the n most significant digits."""
+    """Return the value rounded to exactly 3 decimal places."""
     if q == 0:
-        return 0
-    n = math.floor(math.log(q, 10))
-    result = math.ceil(q / 10**(n-1)) * 10**(n-1)
-
-    # Handle poor precision in float type.
-    if result < 0.1:
-        return round(result * 100) / 100
-    elif result < 10:
-        return round(result * 10) / 10
-    else:
-        return round(result)
+        return 0.000
+    return round(q, 3)
 
 
 def fips_strength_level(n):
@@ -416,6 +418,7 @@ TABLE_HEADER = [
     'E:hours',
     'tt_distill',
     'B tofs',
+    'Init lookup'
 ]
 
 
@@ -428,7 +431,7 @@ def tabulate_cost_estimate(costs: CostEstimate):
         gate_error_desc,
         costs.params.l1_distance,
         costs.params.code_distance,
-        costs.params.deviation_padding - int(math.ceil(math.log2(costs.params.n**2*costs.params.n_e))),
+        costs.params.deviation_padding - int(math.ceil(math.log2(costs.params.n**2*(costs.params.n_e-costs.params.larger_init_lookup)))),
         costs.params.mul_window,
         costs.params.exp_window,
         costs.params.runway_sep,
@@ -440,19 +443,28 @@ def tabulate_cost_estimate(costs: CostEstimate):
         reduce_significant(costs.total_hours / (1 - costs.total_error)),
         costs.params.use_t_t_distillation,
         reduce_significant(costs.toffoli_count / 10**9),
+        costs.params.larger_init_lookup,
     ]
     print('&'.join('${}$'.format(e).ljust(10) for e in row) + '\\\\')
 
 # ------------------------------------------------------------------------------
 
 
-# RSA
+# RSA with simple improvements
 def eh_rsa(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
     delta = 20 # Required to respect assumptions in the analysis.
     m = math.ceil(n / 2) - 1
     l = m - delta
     n_e = m + 2 * l
-    return estimate_best_problem_cost(n, n_e, gate_error_rate)
+    return estimate_best_problem_cost(n, n_e, gate_error_rate, opt_win=True)
+  
+# Original gidney/ekera implementation of RSA factoring
+def eh_rsa_orig(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
+  delta = 20 # Required to respect assumptions in the analysis.
+  m = math.ceil(n / 2) - 1
+  l = m - delta
+  n_e = m + 2 * l
+  return estimate_best_problem_cost(n, n_e, gate_error_rate, opt_win=False)
 
 
 def eh_rsa_max_tradeoffs(n, gate_error_rate) -> Optional[CostEstimate]: # With maximum tradeoffs.
@@ -525,11 +537,12 @@ def tabulate():
 
     datasets = [
         ("RSA, via Ekera-Håstad with s = 1 in a single run:", eh_rsa),
-        ("Discrete logarithms, Schnorr group, via Shor:", shor_dlp_schnorr),
-        ("Discrete logarithms, Schnorr group, via Ekera-Håstad with s = 1 in a single run:", eh_dlp_schnorr),
-        ("Discrete logarithms, short exponent, via Ekerå-Håstad with s = 1 in a single run:", eh_dlp_short),
-        ("Discrete logarithms, general, via Shor:", shor_dlp_general),
-        ("Discrete logarithms, general, via Ekerå with s = 1 in a single run:", eh_dlp_general),
+        ("RSA, via Optimized Windowing with s = 1 in a single run:", eh_rsa_orig),
+        # ("Discrete logarithms, Schnorr group, via Shor:", shor_dlp_schnorr),
+        # ("Discrete logarithms, Schnorr group, via Ekera-Håstad with s = 1 in a single run:", eh_dlp_schnorr),
+        # ("Discrete logarithms, short exponent, via Ekerå-Håstad with s = 1 in a single run:", eh_dlp_short),
+        # ("Discrete logarithms, general, via Shor:", shor_dlp_general),
+        # ("Discrete logarithms, general, via Ekerå with s = 1 in a single run:", eh_dlp_general),
     ]
 
     for name, func in datasets:
@@ -550,65 +563,75 @@ def significant_bits(n: int) -> int:
 
 
 def plot():
-    # Choose bit sizes to plot.
-    max_steps = 64
-    bits = [1024 * s for s in range(1, max_steps + 1)]
-    bits = [e for e in bits if significant_bits(e) <= 3]
-    max_y = 1024 * max_steps
+  # Choose bit sizes to plot.
+  max_steps = 64
+  bits = [1024 * s for s in range(1, max_steps + 1)]
+  bits = [e for e in bits if significant_bits(e) <= 3]
+  max_y = 1024 * max_steps
 
-    datasets = [
-        ('C0', 'RSA via Ekerå-Håstad', eh_rsa, 1e-3, 'o'),
-        ('C5', 'RSA via Ekerå-Håstad - 0.01% gate error instead of 0.1%', eh_rsa, 1e-4, '*'),
-        ('C1', 'Short DLP or Schnorr DLP via EH', eh_dlp_short, 1e-3, 's'),
-        ('C3', 'Schnorr DLP via Shor', shor_dlp_schnorr, 1e-3, 'd'),
-        ('C2', 'General DLP via EH', eh_dlp_general, 1e-3, 'P'),
-        ('C4', 'General DLP via Shor', shor_dlp_general, 1e-3, 'X'),
-    ]
+  datasets = [
+    ('C0', 'RSA via Optimized Windowing', eh_rsa, 1e-3, 'o'),
+    ('C5', 'RSA via Optimized Windowing - 0.01% gate error instead of 0.1%', eh_rsa, 1e-4, '*'),
+    ('C1', 'RSA via Ekerå-Håstad', eh_rsa_orig, 1e-3, 's'),
+    ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error instead of 0.1%', eh_rsa_orig, 1e-4, 'd'),
+    # ('C2', 'General DLP via EH', eh_dlp_general, 1e-3, 'P'),
+    # ('C4', 'General DLP via Shor', shor_dlp_general, 1e-3, 'X'),
+  ]
 
-    plt.subplots(figsize=(16, 9)) # force 16 x 9 inches layout for the PDF
+  plt.subplots(figsize=(16, 9))  # force 16 x 9 inches layout for the PDF
 
-    for color, name, func, gate_error_rate, marker in datasets:
-        valid_ns = []
-        hours = []
-        megaqubits = []
+  def process_dataset(color, name, func, gate_error_rate, marker):
+    valid_ns = []
+    hours = []
+    megaqubits = []
 
-        for n in bits:
-            cost = func(n, gate_error_rate)
-            if cost is not None:
-                expected_hours = cost.total_hours / (1 - cost.total_error)
-                hours.append(expected_hours)
-                megaqubits.append(cost.total_megaqubits)
-                valid_ns.append(n)
+    for n in bits:
+      cost = func(n, gate_error_rate)
+      if cost is not None:
+        expected_hours = cost.total_hours / (1 - cost.total_error)
+        hours.append(expected_hours)
+        megaqubits.append(cost.total_megaqubits)
+        valid_ns.append(n)
 
-        plt.plot(valid_ns, hours, color=color, label=name + ', hours', marker=marker)
-        plt.plot(valid_ns, megaqubits, color=color, label=name + ', megaqubits', linestyle='--', marker=marker)
+    return color, name, marker, valid_ns, hours, megaqubits
 
-    plt.xscale('log')
-    plt.yscale('log')
-    plt.xlim(1024, max_y)
-    plt.xticks(bits, [str(e) for e in bits], rotation=90)
-    yticks = [(5 if e else 1)*10**k
-              for k in range(6)
-              for e in range(2)][:-1]
-    plt.yticks(yticks, [str(e) for e in yticks])
-    plt.minorticks_off()
-    plt.grid(True)
-    plt.xlabel('modulus length n (bits)')
-    plt.ylabel('expected time (hours) and physical qubit count (megaqubits)')
-    plt.gcf().subplots_adjust(bottom=0.16)
+  with ThreadPoolExecutor() as executor:
+    futures = [executor.submit(process_dataset, color, name, func, gate_error_rate, marker)
+           for color, name, func, gate_error_rate, marker in datasets]
 
-    plt.legend(loc='upper left', shadow=False)
+    for i, future in enumerate(tqdm(as_completed(futures), total=len(futures), desc="Datasets")):
+      if i % 2 == 0:
+        print(f"Active threads: {len([f for f in futures if not f.done()])}")
+      color, name, marker, valid_ns, hours, megaqubits = future.result()
+      plt.plot(valid_ns, hours, color=color, label=name + ', hours', marker=marker)
+      plt.plot(valid_ns, megaqubits, color=color, label=name + ', megaqubits', linestyle='--', marker=marker)
 
-    plt.tight_layout() # truncate margins
+  plt.xscale('log')
+  plt.yscale('log')
+  plt.xlim(1024, max_y)
+  plt.xticks(bits, [str(e) for e in bits], rotation=90)
+  yticks = [(5 if e else 1) * 10**k
+        for k in range(6)
+        for e in range(2)][:-1]
+  plt.yticks(yticks, [str(e) for e in yticks])
+  plt.minorticks_off()
+  plt.grid(True)
+  plt.xlabel('modulus length n (bits)')
+  plt.ylabel('expected time (hours) and physical qubit count (megaqubits)')
+  plt.gcf().subplots_adjust(bottom=0.16)
 
-    # Export the figure to a PDF file.
-    path = pathutils.dirname(pathutils.realpath(__file__))
-    path = pathutils.normpath(path + "/../assets/rsa-dlps-extras.pdf")
-    plt.savefig(path)
+  plt.legend(loc='upper left', shadow=False)
+
+  plt.tight_layout()  # truncate margins
+
+  # Export the figure to a PDF file.
+  path = pathutils.dirname(pathutils.realpath(__file__))
+  path = pathutils.normpath(path + "/../assets/rsa-dlps-extras.pdf")
+  plt.savefig(path)
 
 
 if __name__ == '__main__':
-    tabulate()
+    # tabulate()
 
     plot()
 
