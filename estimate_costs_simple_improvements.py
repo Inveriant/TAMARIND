@@ -52,14 +52,24 @@ def parameters_to_attempt(n: int,
                           n_e: int,
                           gate_error_rate: float,
                           opt_win: bool) -> Iterator[Parameters]:
-    l1_distances = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
-    l2_distances = range(9, 51, 2)
-    exp_windows = [4, 5, 6]
-    mul_windows = [4, 5, 6]
-    runway_seps = [512, 768, 1024, 1536, 2048]
-    # don't do large initial lookup if opt window is false
-    larger_init_lookup = range(17, 27) if opt_win else [0]
-    dev_offs = range(2, 10)
+    if n< 1024:
+      l1_distances = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+      l2_distances = range(3, 30, 2)
+      exp_windows = [1,2,3,4,5]
+      mul_windows = [1,2,3,4,5]
+      runway_seps = [32,64,128,256]
+      # don't do large initial lookup if opt window is false
+      larger_init_lookup = range(1, 20) if opt_win else [0]
+      dev_offs = range(2, 10)
+    else:
+      l1_distances = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+      l2_distances = range(9, 51, 2)
+      exp_windows = [4, 5, 6]
+      mul_windows = [4, 5, 6]
+      runway_seps = [512, 768, 1024, 1536, 2048]
+      # don't do large initial lookup if opt window is false
+      larger_init_lookup = range(17, 27) if opt_win else [0]
+      dev_offs = range(2, 10)
 
     for d1, d2, exp_window, mul_window, runway_sep, dev_off, larger_init_lkp in itertools.product(
             l1_distances,
@@ -562,12 +572,17 @@ def significant_bits(n: int) -> int:
     return high - low + 1
 
 
-def plot():
+def plot(key_size=1024):
   # Choose bit sizes to plot.
-  max_steps = 64
-  bits = [1024 * s for s in range(1, max_steps + 1)]
+  
+  min_key_size = key_size
+  if key_size == 1024:
+    max_steps = 64
+  else:
+    max_steps = 8
+  bits = [min_key_size * s for s in range(1, max_steps + 1)]
   bits = [e for e in bits if significant_bits(e) <= 3]
-  max_y = 1024 * max_steps
+  max_y = min_key_size * max_steps
 
   datasets = [
     ('C0', 'RSA via Optimized Windowing', eh_rsa, 1e-3, 'o'),
@@ -608,7 +623,7 @@ def plot():
 
   plt.xscale('log')
   plt.yscale('log')
-  plt.xlim(1024, max_y)
+  plt.xlim(min_key_size, max_y)
   plt.xticks(bits, [str(e) for e in bits], rotation=90)
   yticks = [(5 if e else 1) * 10**k
         for k in range(6)
@@ -626,7 +641,7 @@ def plot():
 
   # Export the figure to a PDF file.
   path = pathutils.dirname(pathutils.realpath(__file__))
-  path = pathutils.normpath(path + "/../assets/rsa-dlps-extras.pdf")
+  path = pathutils.normpath(path + f'/../assets/{min_key_size}-rsa-dlps-extras.pdf')
   plt.savefig(path)
 
 
