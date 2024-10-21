@@ -572,7 +572,7 @@ def significant_bits(n: int) -> int:
     return high - low + 1
 
 
-def plot(key_size=1024):
+def plot(key_size: int = 1024):
   # Choose bit sizes to plot.
   
   min_key_size = key_size
@@ -585,10 +585,10 @@ def plot(key_size=1024):
   max_y = min_key_size * max_steps
 
   datasets = [
-    ('C0', 'RSA via Optimized Windowing', eh_rsa, 1e-3, 'o'),
-    ('C5', 'RSA via Optimized Windowing - 0.01% gate error instead of 0.1%', eh_rsa, 1e-4, '*'),
-    ('C1', 'RSA via Ekerå-Håstad', eh_rsa_orig, 1e-3, 's'),
-    ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error instead of 0.1%', eh_rsa_orig, 1e-4, 'd'),
+    ('C0', 'RSA via Optimized Windowing - 0.1% gate error rate', eh_rsa, 1e-3, 'o'),
+    ('C5', 'RSA via Optimized Windowing - 0.01% gate error rate', eh_rsa, 1e-4, '*'),
+    ('C1', 'RSA via Ekerå-Håstad - 0.1% gate error rate', eh_rsa_orig, 1e-3, 's'),
+    ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error rate', eh_rsa_orig, 1e-4, 'd'),
     # ('C2', 'General DLP via EH', eh_dlp_general, 1e-3, 'P'),
     # ('C4', 'General DLP via Shor', shor_dlp_general, 1e-3, 'X'),
   ]
@@ -641,13 +641,14 @@ def plot(key_size=1024):
 
   # Export the figure to a PDF file.
   path = pathutils.dirname(pathutils.realpath(__file__))
-  path = pathutils.normpath(path + f'/../assets/{min_key_size}-rsa-dlps-extras.pdf')
+  path = pathutils.normpath(path + f'/assets/{str(min_key_size)}-rsa-dlps-extras.pdf')
   plt.savefig(path)
 
 
 if __name__ == '__main__':
     # tabulate()
 
+    # plot(key_size=256)
     plot()
 
     plt.show()
