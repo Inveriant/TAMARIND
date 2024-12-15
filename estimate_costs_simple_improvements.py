@@ -2,6 +2,7 @@ import datetime
 import itertools
 
 from typing import Tuple, NamedTuple, Iterable, Iterator, Optional
+import numpy as np
 
 import math
 import matplotlib.pyplot as plt
@@ -546,8 +547,8 @@ def tabulate():
     moduli = [1024, 2048, 3072, 4096, 8192, 12288, 16384]
 
     datasets = [
-        ("RSA, via Ekera-Håstad with s = 1 in a single run:", eh_rsa),
-        ("RSA, via Optimized Windowing with s = 1 in a single run:", eh_rsa_orig),
+        ("RSA, via Optimized Windowing with s = 1 in a single run:", eh_rsa),
+        ("RSA, via Ekera-Håstad with s = 1 in a single run:", eh_rsa_orig),
         # ("Discrete logarithms, Schnorr group, via Shor:", shor_dlp_schnorr),
         # ("Discrete logarithms, Schnorr group, via Ekera-Håstad with s = 1 in a single run:", eh_dlp_schnorr),
         # ("Discrete logarithms, short exponent, via Ekerå-Håstad with s = 1 in a single run:", eh_dlp_short),
@@ -573,76 +574,144 @@ def significant_bits(n: int) -> int:
 
 
 def plot(key_size: int = 1024):
-  # Choose bit sizes to plot.
-  
-  min_key_size = key_size
-  if key_size == 1024:
-    max_steps = 64
-  else:
-    max_steps = 8
-  bits = [min_key_size * s for s in range(1, max_steps + 1)]
-  bits = [e for e in bits if significant_bits(e) <= 3]
-  max_y = min_key_size * max_steps
+    # Try to load cached data first
+    cache_file = f'plot_cache_{key_size}.npy'
+    if pathutils.exists(cache_file):
+        print(f"Loading cached data from {cache_file}")
+        cached_data = np.load(cache_file, allow_pickle=True).item()
+        plot_from_cache(cached_data, key_size)
+        return
 
-  datasets = [
-    ('C0', 'RSA via Optimized Windowing - 0.1% gate error rate', eh_rsa, 1e-3, 'o'),
-    ('C5', 'RSA via Optimized Windowing - 0.01% gate error rate', eh_rsa, 1e-4, '*'),
-    ('C1', 'RSA via Ekerå-Håstad - 0.1% gate error rate', eh_rsa_orig, 1e-3, 's'),
-    ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error rate', eh_rsa_orig, 1e-4, 'd'),
-    # ('C2', 'General DLP via EH', eh_dlp_general, 1e-3, 'P'),
-    # ('C4', 'General DLP via Shor', shor_dlp_general, 1e-3, 'X'),
-  ]
+    # Choose bit sizes to plot if no cache exists
+    min_key_size = key_size
+    if key_size == 1024:
+        max_steps = 64
+    else:
+        max_steps = 8
+    bits = [min_key_size * s for s in range(1, max_steps + 1)]
+    bits = [e for e in bits if significant_bits(e) <= 3]
+    max_y = min_key_size * max_steps
 
-  plt.subplots(figsize=(16, 9))  # force 16 x 9 inches layout for the PDF
+    datasets = [
+        ('C0', 'RSA via Optimized Windowing - 0.1% gate error rate', eh_rsa, 1e-3, 'o'),
+        ('C5', 'RSA via Optimized Windowing - 0.01% gate error rate', eh_rsa, 1e-4, '*'),
+        ('C1', 'RSA via Ekerå-Håstad - 0.1% gate error rate', eh_rsa_orig, 1e-3, 's'),
+        ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error rate', eh_rsa_orig, 1e-4, 'd'),
+    ]
 
-  def process_dataset(color, name, func, gate_error_rate, marker):
-    valid_ns = []
-    hours = []
-    megaqubits = []
+    # Adjust figure size for small key sizes
+    if key_size <= 256:
+        plt.subplots(figsize=(20, 11))  # Increased height for legend
+    else:
+        plt.subplots(figsize=(16, 9))
+    plt.rcParams.update({'font.size': 14})
 
-    for n in bits:
-      cost = func(n, gate_error_rate)
-      if cost is not None:
-        expected_hours = cost.total_hours / (1 - cost.total_error)
-        hours.append(expected_hours)
-        megaqubits.append(cost.total_megaqubits)
-        valid_ns.append(n)
+    # Dictionary to store results for caching
+    cache_data = {
+        'bits': bits,
+        'max_y': max_y,
+        'results': []
+    }
 
-    return color, name, marker, valid_ns, hours, megaqubits
+    def process_dataset(color, name, func, gate_error_rate, marker):
+        valid_ns = []
+        hours = []
+        megaqubits = []
 
-  with ThreadPoolExecutor() as executor:
-    futures = [executor.submit(process_dataset, color, name, func, gate_error_rate, marker)
-           for color, name, func, gate_error_rate, marker in datasets]
+        for n in bits:
+            cost = func(n, gate_error_rate)
+            if cost is not None:
+                expected_hours = cost.total_hours / (1 - cost.total_error)
+                hours.append(expected_hours)
+                megaqubits.append(cost.total_megaqubits)
+                valid_ns.append(n)
 
-    for i, future in enumerate(tqdm(as_completed(futures), total=len(futures), desc="Datasets")):
-      if i % 2 == 0:
-        print(f"Active threads: {len([f for f in futures if not f.done()])}")
-      color, name, marker, valid_ns, hours, megaqubits = future.result()
-      plt.plot(valid_ns, hours, color=color, label=name + ', hours', marker=marker)
-      plt.plot(valid_ns, megaqubits, color=color, label=name + ', megaqubits', linestyle='--', marker=marker)
+        return color, name, marker, valid_ns, hours, megaqubits
 
-  plt.xscale('log')
-  plt.yscale('log')
-  plt.xlim(min_key_size, max_y)
-  plt.xticks(bits, [str(e) for e in bits], rotation=90)
-  yticks = [(5 if e else 1) * 10**k
-        for k in range(6)
-        for e in range(2)][:-1]
-  plt.yticks(yticks, [str(e) for e in yticks])
-  plt.minorticks_off()
-  plt.grid(True)
-  plt.xlabel('modulus length n (bits)')
-  plt.ylabel('expected time (hours) and physical qubit count (megaqubits)')
-  plt.gcf().subplots_adjust(bottom=0.16)
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_dataset, color, name, func, gate_error_rate, marker)
+               for color, name, func, gate_error_rate, marker in datasets]
 
-  plt.legend(loc='upper left', shadow=False)
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Datasets"):
+            color, name, marker, valid_ns, hours, megaqubits = future.result()
+            cache_data['results'].append({
+                'color': color,
+                'name': name,
+                'marker': marker,
+                'valid_ns': valid_ns,
+                'hours': hours,
+                'megaqubits': megaqubits
+            })
+            plt.plot(valid_ns, hours, color=color, label=name + ', hours', marker=marker)
+            plt.plot(valid_ns, megaqubits, color=color, label=name + ', megaqubits', linestyle='--', marker=marker)
 
-  plt.tight_layout()  # truncate margins
+    # Save the computed data
+    np.save(cache_file, cache_data)
+    print(f"Cached data saved to {cache_file}")
 
-  # Export the figure to a PDF file.
-  path = pathutils.dirname(pathutils.realpath(__file__))
-  path = pathutils.normpath(path + f'/assets/{str(min_key_size)}-rsa-dlps-extras.pdf')
-  plt.savefig(path)
+    finish_plot(bits, max_y, key_size)
+
+
+def plot_from_cache(cache_data, key_size):
+    # Adjust figure size for small key sizes
+    if key_size <= 256:
+        plt.subplots(figsize=(20, 11))  # Increased height for legend
+    else:
+        plt.subplots(figsize=(16, 9))
+    plt.rcParams.update({'font.size': 14})
+
+    bits = cache_data['bits']
+    max_y = cache_data['max_y']
+
+    for result in cache_data['results']:
+        plt.plot(result['valid_ns'], result['hours'], 
+                color=result['color'], 
+                label=result['name'] + ', hours', 
+                marker=result['marker'])
+        plt.plot(result['valid_ns'], result['megaqubits'],
+                color=result['color'],
+                label=result['name'] + ', megaqubits',
+                linestyle='--',
+                marker=result['marker'])
+
+    finish_plot(bits, max_y, key_size)
+
+
+def finish_plot(bits, max_y, key_size):
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlim(key_size, max_y)
+    plt.xticks(bits, [str(e) for e in bits], rotation=90, fontsize=12)
+    
+    if key_size <= 256:
+        yticks = [(5 if e else 1) * 10**k
+                for k in range(3)  # Only go up to 10^2 = 100
+                for e in range(2)][:-1]
+        plt.ylim(top=500)
+    else:
+        yticks = [(5 if e else 1) * 10**k
+                for k in range(6)
+                for e in range(2)][:-1]
+                
+    plt.yticks(yticks, [str(e) for e in yticks], fontsize=12)
+    plt.minorticks_off()
+    plt.grid(True)
+    plt.xlabel('modulus length n (bits)', fontsize=16, fontweight='bold')
+    plt.ylabel('expected time (hours) and physical qubit count (megaqubits)', fontsize=16, fontweight='bold')
+
+    # Move and stack legend on top for small key sizes
+    if key_size <= 256:
+        plt.legend(bbox_to_anchor=(0.5, 1.15), loc='center', ncol=2, shadow=False, fontsize=14)
+        plt.subplots_adjust(top=0.85)  # Make room for legend
+    else:
+        plt.legend(loc='upper left', shadow=False, fontsize=14)
+        plt.gcf().subplots_adjust(bottom=0.16)
+        
+    plt.tight_layout()
+
+    path = pathutils.dirname(pathutils.realpath(__file__))
+    path = pathutils.normpath(path + f'/assets/{str(key_size)}-rsa-dlps-extras.pdf')
+    plt.savefig(path, bbox_inches='tight')
 
 
 if __name__ == '__main__':
@@ -652,3 +721,44 @@ if __name__ == '__main__':
     plot()
 
     plt.show()
+    
+    
+    
+    """
+    RSA, via Ekera-Håstad with s = 1 in a single run:
+n         &n_e       &phys_err  &d1        &d2        &dev_off   &g_mul     &g_exp     &g_sep     &%         &volume    &E:volume  &Mqb       &hours     &E:hours   &tt_distill&B tofs    &Init lookup\\
+\hline
+$1024$    &$1493$    &$0.1\%$   &$15$      &$27$      &$4$       &$5$       &$5$       &$1024$    &$6\%$     &$0.488$   &$0.519$   &$9.624$   &$1.217$   &$1.295$   &$False$   &$0.393$   &$18$      \\
+$2048$    &$3029$    &$0.1\%$   &$17$      &$27$      &$6$       &$5$       &$5$       &$1024$    &$20\%$    &$4.419$   &$5.524$   &$21.616$  &$4.906$   &$6.133$   &$False$   &$2.656$   &$19$      \\
+$3072$    &$4565$    &$0.1\%$   &$17$      &$29$      &$4$       &$4$       &$5$       &$1024$    &$9\%$     &$17.727$  &$19.48$   &$37.897$  &$11.226$  &$12.336$  &$False$   &$9.742$   &$20$      \\
+$4096$    &$6101$    &$0.1\%$   &$17$      &$31$      &$8$       &$4$       &$5$       &$1024$    &$5\%$     &$46.424$  &$48.867$  &$54.616$  &$20.4$    &$21.474$  &$False$   &$22.8$    &$20$      \\
+$8192$    &$12245$   &$0.1\%$   &$19$      &$33$      &$4$       &$4$       &$5$       &$1024$    &$5\%$     &$460.418$ &$484.65$  &$133.319$ &$82.884$  &$87.246$  &$False$   &$177.051$ &$21$      \\
+$12288$   &$18389$   &$0.1\%$   &$19$      &$33$      &$6$       &$4$       &$5$       &$1024$    &$11\%$    &$1558.32$ &$1750.921$&$199.979$ &$187.018$ &$210.133$ &$False$   &$594.127$ &$22$      \\
+$16384$   &$24533$   &$0.1\%$   &$19$      &$33$      &$3$       &$4$       &$5$       &$1024$    &$24\%$    &$3687.73$ &$4852.276$&$266.638$ &$331.931$ &$436.751$ &$False$   &$1398.629$&$22$      \\
+$1024$    &$1493$    &$0.01\%$  &$7$       &$13$      &$4$       &$5$       &$5$       &$512$     &$5\%$     &$0.067$   &$0.071$   &$2.637$   &$0.612$   &$0.644$   &$False$   &$0.402$   &$18$      \\
+$2048$    &$3029$    &$0.01\%$  &$7$       &$13$      &$3$       &$5$       &$5$       &$512$     &$21\%$    &$0.541$   &$0.684$   &$5.273$   &$2.461$   &$3.115$   &$False$   &$2.72$    &$19$      \\
+$3072$    &$4565$    &$0.01\%$  &$9$       &$15$      &$5$       &$5$       &$5$       &$768$     &$2\%$     &$2.851$   &$2.909$   &$9.12$    &$7.503$   &$7.656$   &$False$   &$8.486$   &$20$      \\
+$4096$    &$6101$    &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$3\%$     &$6.588$   &$6.792$   &$15.241$  &$10.374$  &$10.695$  &$False$   &$23.559$  &$20$      \\
+$8192$    &$12245$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$9\%$     &$52.92$   &$58.154$  &$30.482$  &$41.666$  &$45.787$  &$False$   &$184.405$ &$21$      \\
+$12288$   &$18389$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$25\%$    &$179.074$ &$238.766$ &$45.724$  &$93.995$  &$125.326$ &$False$   &$618.823$ &$22$      \\
+$16384$   &$24533$   &$0.01\%$  &$9$       &$17$      &$4$       &$5$       &$5$       &$1024$    &$3\%$     &$636.452$ &$656.136$ &$56.682$  &$269.484$ &$277.818$ &$False$   &$1136.762$&$23$      \\
+
+RSA, via Optimized Windowing with s = 1 in a single run:
+n         &n_e       &phys_err  &d1        &d2        &dev_off   &g_mul     &g_exp     &g_sep     &%         &volume    &E:volume  &Mqb       &hours     &E:hours   &tt_distill&B tofs    &Init lookup\\
+\hline
+$1024$    &$1493$    &$0.1\%$   &$15$      &$27$      &$5$       &$5$       &$5$       &$1024$    &$6\%$     &$0.507$   &$0.539$   &$9.624$   &$1.264$   &$1.344$   &$False$   &$0.407$   &$0$       \\
+$2048$    &$3029$    &$0.1\%$   &$15$      &$27$      &$4$       &$5$       &$5$       &$1024$    &$31\%$    &$4.047$   &$5.865$   &$19.249$  &$5.046$   &$7.313$   &$False$   &$2.698$   &$0$       \\
+$3072$    &$4565$    &$0.1\%$   &$17$      &$29$      &$6$       &$4$       &$5$       &$1024$    &$9\%$     &$18.328$  &$20.141$  &$37.897$  &$11.607$  &$12.755$  &$False$   &$9.885$   &$0$       \\
+$4096$    &$6101$    &$0.1\%$   &$17$      &$31$      &$9$       &$4$       &$5$       &$1024$    &$5\%$     &$47.963$  &$50.488$  &$54.616$  &$21.077$  &$22.186$  &$False$   &$23.038$  &$0$       \\
+$8192$    &$12245$   &$0.1\%$   &$19$      &$33$      &$4$       &$4$       &$5$       &$1024$    &$5\%$     &$475.18$  &$500.189$ &$133.319$ &$85.541$  &$90.044$  &$False$   &$177.904$ &$0$       \\
+$12288$   &$18389$   &$0.1\%$   &$19$      &$33$      &$3$       &$4$       &$5$       &$1024$    &$12\%$    &$1603.8$  &$1822.5$  &$199.979$ &$192.476$ &$218.723$ &$False$   &$594.295$ &$0$       \\
+$16384$   &$24533$   &$0.1\%$   &$19$      &$33$      &$4$       &$4$       &$5$       &$1024$    &$24\%$    &$3805.638$&$5007.418$&$266.638$ &$342.544$ &$450.716$ &$False$   &$1403.457$&$0$       \\
+$1024$    &$1493$    &$0.01\%$  &$7$       &$13$      &$4$       &$5$       &$5$       &$512$     &$5\%$     &$0.07$    &$0.073$   &$2.637$   &$0.633$   &$0.667$   &$False$   &$0.415$   &$0$       \\
+$2048$    &$3029$    &$0.01\%$  &$7$       &$13$      &$4$       &$5$       &$5$       &$512$     &$21\%$    &$0.558$   &$0.706$   &$5.273$   &$2.538$   &$3.212$   &$False$   &$2.774$   &$0$       \\
+$3072$    &$4565$    &$0.01\%$  &$9$       &$15$      &$5$       &$5$       &$5$       &$768$     &$2\%$     &$2.92$    &$2.98$    &$9.12$    &$7.686$   &$7.843$   &$False$   &$8.595$   &$0$       \\
+$4096$    &$6101$    &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$3\%$     &$6.791$   &$7.001$   &$15.241$  &$10.693$  &$11.024$  &$False$   &$23.773$  &$0$       \\
+$8192$    &$12245$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$9\%$     &$54.461$  &$59.848$  &$30.482$  &$42.88$   &$47.12$   &$False$   &$185.27$  &$0$       \\
+$12288$   &$18389$   &$0.01\%$  &$9$       &$15$      &$5$       &$5$       &$5$       &$768$     &$27\%$    &$187.294$ &$256.567$ &$36.479$  &$123.223$ &$168.799$ &$False$   &$492.769$ &$0$       \\
+$16384$   &$24533$   &$0.01\%$  &$9$       &$17$      &$4$       &$5$       &$5$       &$1024$    &$3\%$     &$648.512$ &$668.57$  &$56.682$  &$274.59$  &$283.083$ &$False$   &$1139.884$&$0$       \\
+    
+    """
