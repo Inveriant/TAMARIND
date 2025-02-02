@@ -1,14 +1,14 @@
 import datetime
 import itertools
 
-from typing import Tuple, NamedTuple, Iterable, Iterator, Optional
+from typing import Tuple, NamedTuple, Iterator, Optional
 import numpy as np
 
 import math
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+import seaborn as sns
 import os.path as pathutils
 
 Parameters = NamedTuple(
@@ -317,21 +317,24 @@ def estimate_algorithm_cost(params: Parameters) -> Optional[CostEstimate]:
   if params.opt_win:
     # split unlookup into two parts, cost of unary conversion (done only one per exponent window) and cost of phase correction (i.e cost of unlookup)
     unlookup_depth = math.sqrt(lookup_depth)
-    unary_depth = math.sqrt(lookup_depth)
-    
+    unary_tof_count = math.sqrt(lookup_depth)
+    unary_depth = (params.exp_window + params.mul_window)/2
     
     lookup_depth -= 2 ** (params.exp_window)
     # We call this additional toffoli count, but it's actually less if we have a larger initial lookup and use deferred unlookups
-    additional_tof_count = (2 * (params.n_e - params.larger_init_lookup) * unary_depth / params.exp_window) + \
+    additional_tof_count = (2 * (params.n_e - params.larger_init_lookup) * unary_tof_count / params.exp_window) + \
                  (2 ** (params.larger_init_lookup) - 1)
-    additional_time = (2 ** (params.larger_init_lookup) - 1) * params.code_distance * params.cycle_time / 2
+                 
+    additional_time = (2 ** (params.larger_init_lookup) - 1) * params.code_distance * params.cycle_time / 2 + \
+      (2 * (params.n_e - params.larger_init_lookup) * unary_depth / params.exp_window)*params.reaction_time
   else:
     unlookup_depth = 2 * math.sqrt(lookup_depth)
     additional_tof_count = 0
     additional_time = 0*params.cycle_time
 
-  tof_count = (adder_depth * dev.piece_count + lookup_depth + unlookup_depth) * dev.inner_loop_count + additional_tof_count
-  inner_loop_time = (
+  alpha = 1
+  tof_count = alpha*(adder_depth * dev.piece_count + lookup_depth + unlookup_depth) * dev.inner_loop_count + additional_tof_count
+  inner_loop_time = alpha*(
     adder_depth * params.reaction_time +
     lookup_depth * params.code_distance * params.cycle_time / 2 +
     unlookup_depth * params.code_distance * params.cycle_time / 2)
@@ -388,6 +391,13 @@ def estimate_best_problem_cost(n: int, n_e: int, gate_error_rate: float, opt_win
                  for params in parameters_to_attempt(n, n_e, gate_error_rate, opt_win)]
     surviving_estimates = [e for e in estimates if e is not None]
     return min(surviving_estimates, key=rank_estimate, default=None)
+  
+  
+def estimate_all_surviving_problem_cost(n: int, n_e: int, gate_error_rate: float, opt_win: bool = True) -> Optional[CostEstimate]:
+    estimates = [estimate_algorithm_cost(params)
+                 for params in parameters_to_attempt(n, n_e, gate_error_rate, opt_win)]
+    surviving_estimates = [e for e in estimates if e is not None]
+    return surviving_estimates
 
 
 # ------------------------------------------------------------------------------
@@ -469,6 +479,14 @@ def eh_rsa(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
     n_e = m + 2 * l
     return estimate_best_problem_cost(n, n_e, gate_error_rate, opt_win=True)
   
+  
+def eh_rsa_all_surviving_estimates(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
+    delta = 20 # Required to respect assumptions in the analysis.
+    m = math.ceil(n / 2) - 1
+    l = m - delta
+    n_e = m + 2 * l
+    return estimate_all_surviving_problem_cost(n, n_e, gate_error_rate, opt_win=True)
+  
 # Original gidney/ekera implementation of RSA factoring
 def eh_rsa_orig(n, gate_error_rate) -> Optional[CostEstimate]: # Single run.
   delta = 20 # Required to respect assumptions in the analysis.
@@ -547,8 +565,8 @@ def tabulate():
     moduli = [1024, 2048, 3072, 4096, 8192, 12288, 16384]
 
     datasets = [
-        ("RSA, via Optimized Windowing with s = 1 in a single run:", eh_rsa),
-        ("RSA, via Ekera-Håstad with s = 1 in a single run:", eh_rsa_orig),
+        ("Our work with s = 1 in a single run:", eh_rsa),
+        ("Ekera-Håstad with s = 1 in a single run:", eh_rsa_orig),
         # ("Discrete logarithms, Schnorr group, via Shor:", shor_dlp_schnorr),
         # ("Discrete logarithms, Schnorr group, via Ekera-Håstad with s = 1 in a single run:", eh_dlp_schnorr),
         # ("Discrete logarithms, short exponent, via Ekerå-Håstad with s = 1 in a single run:", eh_dlp_short),
@@ -593,10 +611,10 @@ def plot(key_size: int = 1024):
     max_y = min_key_size * max_steps
 
     datasets = [
-        ('C0', 'RSA via Optimized Windowing - 0.1% gate error rate', eh_rsa, 1e-3, 'o'),
-        ('C5', 'RSA via Optimized Windowing - 0.01% gate error rate', eh_rsa, 1e-4, '*'),
-        ('C1', 'RSA via Ekerå-Håstad - 0.1% gate error rate', eh_rsa_orig, 1e-3, 's'),
-        ('C3', 'RSA via Ekerå-Håstad - 0.01% gate error rate', eh_rsa_orig, 1e-4, 'd'),
+        ('C0', 'Our work - 0.1% gate error rate', eh_rsa, 1e-3, 'o'),
+        ('C1', 'Our work - 0.01% gate error rate', eh_rsa, 1e-4, '*'),
+        ('C2', 'Ekerå-Håstad - 0.1% gate error rate', eh_rsa_orig, 1e-3, 's'),
+        ('C3', 'Ekerå-Håstad - 0.01% gate error rate', eh_rsa_orig, 1e-4, 'd'),
     ]
 
     # Adjust figure size for small key sizes
@@ -654,10 +672,10 @@ def plot(key_size: int = 1024):
 
 def plot_from_cache(cache_data, key_size):
     # Adjust figure size for small key sizes
-    if key_size <= 256:
-        plt.subplots(figsize=(20, 11))  # Increased height for legend
-    else:
-        plt.subplots(figsize=(16, 9))
+    # if key_size <= 256:
+    #     plt.subplots(figsize=(20, 11))  # Increased height for legend
+    # else:
+    plt.subplots(figsize=(16, 9))
     plt.rcParams.update({'font.size': 14})
 
     bits = cache_data['bits']
@@ -696,17 +714,13 @@ def finish_plot(bits, max_y, key_size):
     plt.yticks(yticks, [str(e) for e in yticks], fontsize=12)
     plt.minorticks_off()
     plt.grid(True)
-    plt.xlabel('modulus length n (bits)', fontsize=16, fontweight='bold')
-    plt.ylabel('expected time (hours) and physical qubit count (megaqubits)', fontsize=16, fontweight='bold')
+    plt.xlabel('Modulus length n (bits)', fontsize=16, fontweight='bold')
+    plt.ylabel('Expected time (hours) and physical qubit count (megaqubits)', fontsize=16, fontweight='bold')
 
-    # Move and stack legend on top for small key sizes
-    if key_size <= 256:
-        plt.legend(bbox_to_anchor=(0.5, 1.15), loc='center', ncol=2, shadow=False, fontsize=14)
-        plt.subplots_adjust(top=0.85)  # Make room for legend
-    else:
-        plt.legend(loc='upper left', shadow=False, fontsize=14)
-        plt.gcf().subplots_adjust(bottom=0.16)
-        
+    # Place legend inside the axes in the upper-left corner
+    plt.legend(loc='upper left', shadow=False, fontsize=14)
+    plt.gcf().subplots_adjust(bottom=0.16)  # Adjust bottom to make room for ticks
+    
     plt.tight_layout()
 
     path = pathutils.dirname(pathutils.realpath(__file__))
@@ -714,12 +728,177 @@ def finish_plot(bits, max_y, key_size):
     plt.savefig(path, bbox_inches='tight')
 
 
+def update_cached_labels(key_size: int = 1024):
+    cache_file = f'plot_cache_{key_size}.npy'
+    if pathutils.exists(cache_file):
+        cached_data = np.load(cache_file, allow_pickle=True).item()
+        
+        # Define the mapping from old to new labels
+        new_names = {
+            'RSA via Optimized Windowing - 0.1% gate error rate': 'Our work - 0.1% gate error rate',
+            'RSA via Optimized Windowing - 0.01% gate error rate': 'Our work - 0.01% gate error rate',
+            'RSA via Ekerå-Håstad - 0.1% gate error rate': 'Ekerå-Håstad - 0.1% gate error rate',
+            'RSA via Ekerå-Håstad - 0.01% gate error rate': 'Ekerå-Håstad - 0.01% gate error rate'
+        }
+        
+        # Update the names in the cached data
+        for result in cached_data['results']:
+            if result['name'] in new_names:
+                result['name'] = new_names[result['name']]
+        
+        # Save the updated data back to the cache file
+        np.save(cache_file, cached_data)
+        print(f"Updated labels in {cache_file}")
+
+def plot_surviving_estimates(key_sizes: list[int], gate_error_rate: float):
+    """Creates a scatter plot of all surviving estimates for multiple key sizes."""
+    # Set up the plot style
+    plt.subplots(figsize=(16, 9))
+    plt.rcParams.update({'font.size': 14})
+    
+    # Use consistent colors from the rest of the code
+    color_map = {
+        1024: 'C0',  # Blue
+        2048: 'C1',  # Orange
+        3072: 'C2',  # Green
+        4096: 'C3',  # Red
+        8192: 'C4',  # Purple
+        12288: 'C5', # Brown
+        16384: 'C6'  # Pink
+    }
+    
+    # Store best estimates for annotation
+    best_estimates = {}
+    
+    # Create empty lists for legend handles and labels
+    legend_elements = []
+    
+    # Process each key size with tqdm progress bar
+    min_time = float('inf')
+    max_time = 0
+    min_qubits = float('inf')
+    max_qubits = 0
+    
+    for idx, n in tqdm(enumerate(key_sizes), total=len(key_sizes), desc="Processing key sizes"):
+        surviving_estimates = eh_rsa_all_surviving_estimates(n, gate_error_rate)
+        
+        if not surviving_estimates:
+            print(f"No surviving estimates for n={n}")
+            continue
+            
+        expected_times = [est.total_hours / (1 - est.total_error) for est in surviving_estimates]
+        qubit_counts = [est.total_megaqubits for est in surviving_estimates]
+        
+        # Plot points with low alpha
+        plt.scatter(expected_times, qubit_counts, 
+                   alpha=0.2,  # Low transparency for actual points
+                   c=color_map[n],
+                   s=100,
+                   rasterized=False,
+                   label='_nolegend_')  # Don't include in legend
+        
+        # Create a proxy artist for the legend with full opacity
+        legend_elements.append(plt.scatter([], [], 
+                                         c=color_map[n],
+                                         marker='$\u26BF$',
+                                         s=100,
+                                         alpha=1.0,  # Full opacity for legend
+                                         label=f'n={n} bits'))
+        
+        best = min(surviving_estimates, key=rank_estimate)
+        best_estimates[n] = best
+        
+        best_time = best.total_hours / (1 - best.total_error)
+        best_qubits = best.total_megaqubits
+        plt.scatter([best_time], [best_qubits], 
+                   color=color_map[n],
+                   marker='$\u26BF$',  # Diamond marker for minimum estimates
+                   s=200,
+                   zorder=5,
+                   edgecolor='black',
+                   linewidth=1,
+                   alpha=1.0,
+                   label='_nolegend_')  # Don't add duplicate legend entries
+        
+        min_time = min(min_time, min(expected_times))
+        max_time = max(max_time, max(expected_times))
+        min_qubits = min(min_qubits, min(qubit_counts))
+        max_qubits = max(max_qubits, max(qubit_counts))
+    
+    # Set up axes
+    plt.xscale('log')
+    plt.yscale('log')
+    
+    # Generate tick locations
+    def generate_ticks(min_val, max_val):
+        ticks = []
+        start_exp = int(np.floor(np.log10(min_val)))
+        end_exp = int(np.ceil(np.log10(max_val)))
+        
+        for exp in range(start_exp, end_exp + 1):
+            for base in [1, 2, 5]:
+                tick = base * 10**exp
+                if min_val <= tick <= max_val:
+                    ticks.append(tick)
+        return ticks
+    
+    x_ticks = generate_ticks(min_time, max_time)
+    y_ticks = generate_ticks(min_qubits, max_qubits)
+    
+    plt.xticks(x_ticks, [f'{t:.1f}' for t in x_ticks], rotation=45, fontsize=12)
+    plt.yticks(y_ticks, [f'{t:.1f}' for t in y_ticks], fontsize=12)
+    
+    plt.minorticks_off()  # Match other plots
+    plt.grid(True)  # Simple grid like other plots
+    
+    plt.xlabel('Expected time (hours)', fontsize=16, fontweight='bold')
+    plt.ylabel('Physical qubit count (millions)', fontsize=16, fontweight='bold')
+    
+    # Create custom legend handles
+    from matplotlib.lines import Line2D
+    legend_handles = []
+    for n, color in color_map.items():
+        if n in best_estimates:
+            # Create a solid marker for the legend
+            handle = Line2D([0], [0], marker='o', color='none', 
+                            markerfacecolor=color, alpha=1.0, 
+                            markersize=10, label=f'n={n} bits')
+            legend_handles.append(handle)
+
+    # Add the minimum estimate marker
+    min_handle = Line2D([0], [0], marker='$\u26BF$', color='gray', 
+                        label='Minimum estimate', markersize=10, 
+                        markerfacecolor='gray', linestyle='None')
+    legend_handles.append(min_handle)
+    
+    # Add the legend to the plot
+    plt.legend(handles=legend_handles, 
+               title='Key Sizes', 
+               title_fontsize=14, 
+               fontsize=14, 
+               loc='upper left', 
+               shadow=False)
+    
+    plt.gcf().subplots_adjust(bottom=0.16)
+    plt.tight_layout()
+    
+    # Save plot
+    path = pathutils.dirname(pathutils.realpath(__file__))
+    path = pathutils.normpath(path + f'/assets/surviving-estimates-{gate_error_rate:.0e}.png')
+    plt.savefig(path, bbox_inches='tight', dpi=300, transparent=True)
+    plt.savefig(path, bbox_inches='tight')
+    print(f"\nPlot saved to: {path}")
+
 if __name__ == '__main__':
     # tabulate()
-
+    # Update all common key sizes
+    # for key_size in [256, 1024]:  # add or remove sizes as needed
+    #     update_cached_labels(key_size)
     # plot(key_size=256)
-    plot()
-
+    # plot()
+# Example usage
+    key_sizes = [1024, 2048, 3072, 4096]
+    plot_surviving_estimates(key_sizes, gate_error_rate=1e-3)
     plt.show()
     
     
@@ -742,23 +921,5 @@ $4096$    &$6101$    &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$
 $8192$    &$12245$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$9\%$     &$52.92$   &$58.154$  &$30.482$  &$41.666$  &$45.787$  &$False$   &$184.405$ &$21$      \\
 $12288$   &$18389$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$25\%$    &$179.074$ &$238.766$ &$45.724$  &$93.995$  &$125.326$ &$False$   &$618.823$ &$22$      \\
 $16384$   &$24533$   &$0.01\%$  &$9$       &$17$      &$4$       &$5$       &$5$       &$1024$    &$3\%$     &$636.452$ &$656.136$ &$56.682$  &$269.484$ &$277.818$ &$False$   &$1136.762$&$23$      \\
-
-RSA, via Optimized Windowing with s = 1 in a single run:
-n         &n_e       &phys_err  &d1        &d2        &dev_off   &g_mul     &g_exp     &g_sep     &%         &volume    &E:volume  &Mqb       &hours     &E:hours   &tt_distill&B tofs    &Init lookup\\
-\hline
-$1024$    &$1493$    &$0.1\%$   &$15$      &$27$      &$5$       &$5$       &$5$       &$1024$    &$6\%$     &$0.507$   &$0.539$   &$9.624$   &$1.264$   &$1.344$   &$False$   &$0.407$   &$0$       \\
-$2048$    &$3029$    &$0.1\%$   &$15$      &$27$      &$4$       &$5$       &$5$       &$1024$    &$31\%$    &$4.047$   &$5.865$   &$19.249$  &$5.046$   &$7.313$   &$False$   &$2.698$   &$0$       \\
-$3072$    &$4565$    &$0.1\%$   &$17$      &$29$      &$6$       &$4$       &$5$       &$1024$    &$9\%$     &$18.328$  &$20.141$  &$37.897$  &$11.607$  &$12.755$  &$False$   &$9.885$   &$0$       \\
-$4096$    &$6101$    &$0.1\%$   &$17$      &$31$      &$9$       &$4$       &$5$       &$1024$    &$5\%$     &$47.963$  &$50.488$  &$54.616$  &$21.077$  &$22.186$  &$False$   &$23.038$  &$0$       \\
-$8192$    &$12245$   &$0.1\%$   &$19$      &$33$      &$4$       &$4$       &$5$       &$1024$    &$5\%$     &$475.18$  &$500.189$ &$133.319$ &$85.541$  &$90.044$  &$False$   &$177.904$ &$0$       \\
-$12288$   &$18389$   &$0.1\%$   &$19$      &$33$      &$3$       &$4$       &$5$       &$1024$    &$12\%$    &$1603.8$  &$1822.5$  &$199.979$ &$192.476$ &$218.723$ &$False$   &$594.295$ &$0$       \\
-$16384$   &$24533$   &$0.1\%$   &$19$      &$33$      &$4$       &$4$       &$5$       &$1024$    &$24\%$    &$3805.638$&$5007.418$&$266.638$ &$342.544$ &$450.716$ &$False$   &$1403.457$&$0$       \\
-$1024$    &$1493$    &$0.01\%$  &$7$       &$13$      &$4$       &$5$       &$5$       &$512$     &$5\%$     &$0.07$    &$0.073$   &$2.637$   &$0.633$   &$0.667$   &$False$   &$0.415$   &$0$       \\
-$2048$    &$3029$    &$0.01\%$  &$7$       &$13$      &$4$       &$5$       &$5$       &$512$     &$21\%$    &$0.558$   &$0.706$   &$5.273$   &$2.538$   &$3.212$   &$False$   &$2.774$   &$0$       \\
-$3072$    &$4565$    &$0.01\%$  &$9$       &$15$      &$5$       &$5$       &$5$       &$768$     &$2\%$     &$2.92$    &$2.98$    &$9.12$    &$7.686$   &$7.843$   &$False$   &$8.595$   &$0$       \\
-$4096$    &$6101$    &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$3\%$     &$6.791$   &$7.001$   &$15.241$  &$10.693$  &$11.024$  &$False$   &$23.773$  &$0$       \\
-$8192$    &$12245$   &$0.01\%$  &$9$       &$15$      &$5$       &$4$       &$5$       &$512$     &$9\%$     &$54.461$  &$59.848$  &$30.482$  &$42.88$   &$47.12$   &$False$   &$185.27$  &$0$       \\
-$12288$   &$18389$   &$0.01\%$  &$9$       &$15$      &$5$       &$5$       &$5$       &$768$     &$27\%$    &$187.294$ &$256.567$ &$36.479$  &$123.223$ &$168.799$ &$False$   &$492.769$ &$0$       \\
-$16384$   &$24533$   &$0.01\%$  &$9$       &$17$      &$4$       &$5$       &$5$       &$1024$    &$3\%$     &$648.512$ &$668.57$  &$56.682$  &$274.59$  &$283.083$ &$False$   &$1139.884$&$0$       \\
     
     """
