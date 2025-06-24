@@ -54,17 +54,6 @@ Generate optimal space time minizing plots for larger key sizes
 plot()
 ```
 
-#### Available Options
-
-- `--key-sizes`: Specify RSA key sizes to analyze (e.g., `512 1024 2048 4096`)
-- `--plot-type`: Choose what to plot:
-  - `physical_qubits`: Physical qubit requirements vs key size
-  - `runtime`: Runtime estimates vs key size  
-  - `both`: Both physical qubits and runtime on separate plots
-  - `landscape`: Parameter landscape showing algorithm variants
-- `--parameter-sweep`: Enable comprehensive parameter exploration
-- `--output-dir`: Specify output directory for plots (default: `./plots/`)
-
 #### Understanding the Outputs
 
 The plots will show:
@@ -73,26 +62,6 @@ The plots will show:
 - **Parameter Landscape**: Different algorithm configurations and their relative performance across the cost estimate space
 
 All plots are automatically saved as high-quality PDF files in the output directory.
-
-## Core Modules
-
-### `algorithms/`
-- **`cost_estimator.py`**: Main cost estimation engine with comprehensive error analysis
-- **`problem_variants.py`**: Implementations of different cryptographic problems (RSA, DLP variants)
-
-### `models/`
-- **`parameters.py`**: Parameter classes, cost estimates, and parameter space generators
-
-### `quantum/`
-- **`error_models.py`**: Topological and logical error rate calculations
-- **`magic_states.py`**: Magic state distillation cost estimation
-- **`surface_code.py`**: Surface code layout and physical qubit calculations
-
-### `visualization/`
-- **`plotting.py`**: Comprehensive plotting tools with caching for expensive computations
-
-### `output/`
-- **`tabulation.py`**: LaTeX table generation for academic papers
 
 ## Citation
 
