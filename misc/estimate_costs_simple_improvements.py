@@ -8,7 +8,6 @@ import math
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import seaborn as sns
 import os.path as pathutils
 
 Parameters = NamedTuple(

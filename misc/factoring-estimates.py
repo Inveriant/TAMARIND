@@ -11,8 +11,8 @@ import os.path as pathutils
 import numpy as np
 
 
-from helpers import Parameters, TABLE_HEADER, plot_datasets, DeviationProperties, CostEstimate
-from helpers import reduce_significant, fips_strength_level, fips_strength_level_rounded, probability_union, physical_qubits_per_logical_qubit
+from misc.helpers import Parameters, TABLE_HEADER, plot_datasets, DeviationProperties, CostEstimate
+from misc.helpers import reduce_significant, fips_strength_level, fips_strength_level_rounded, probability_union, physical_qubits_per_logical_qubit
 
 
 space_overhead = 1.2
@@ -153,11 +153,7 @@ def compute_distillation_error(tof_count: int,
     L2_distillation_error = 28 * L1_total_T_error**2            # hyperparam  
     L2_total_CCZ_or_2T_error = L2_topological_error + L2_distillation_error
 
-    return tof_count * L2_total_CCZ_or_2T_error    
-
-
-
-
+    return tof_count * L2_total_CCZ_or_2T_error
 
 
 def compute_deviation_properties(params: Parameters) -> DeviationProperties:
